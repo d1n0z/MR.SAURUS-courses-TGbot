@@ -170,7 +170,7 @@ description_keys = {
         "course_already_bought": "Курс уже куплен",
         "course_buy_confirm": "Подтверждение покупки курса",
         "course_bought": "Курс куплен",
-        "course_unavailable": "Курс недоступен"
+        "course_unavailable": "Курс недоступен",
     },
     "buttons": {
         "manager": "Менеджер",

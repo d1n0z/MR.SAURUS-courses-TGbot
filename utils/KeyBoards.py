@@ -11,7 +11,8 @@ async def subscribe(bot) -> InlineKeyboardMarkup:
 
     for channel in db.SubscribeChannel.select():
         try:
-            row.append(InlineKeyboardButton(text=channel.name, url=(await Cache.cachedInvite(bot, channel.channel))))
+            row.append(InlineKeyboardButton(text=channel.name, callback_data="_",
+                                            url=(await Cache.cachedInvite(bot, channel.channel))))
         except Exception as e:
             print(f"Keyboards:subscribe(bot={bot}) -> InlineKeyboardMarkup, ", e)
 
@@ -731,15 +732,42 @@ def welcomeInline() -> InlineKeyboardMarkup:
     ])
 
 
-def confirmMail() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def confirmMail(linebreak=True) -> InlineKeyboardMarkup:
+    kbd = [
         [InlineKeyboardButton(text="Отправить!", callback_data="mailing_confirm")],
+        [InlineKeyboardButton(text="Добавить кнопку", callback_data="mailing_add_button")],
         [InlineKeyboardButton(text="Не отправлять", callback_data="cancel")]
-    ])
+    ]
+    if linebreak:
+        kbd.insert(2, [InlineKeyboardButton(text="Перенести кнопки на следующий ряд",
+                                            callback_data="mailing_add_line")])
+    return InlineKeyboardMarkup(inline_keyboard=kbd)
+
+
+def mailKeyboard(buttons) -> InlineKeyboardMarkup:
+    kbd = []
+    for y in buttons:
+        kbd.append([])
+        for i in y:
+            kbd[-1].append(InlineKeyboardButton(text=i[0], url=i[1], callback_data="_"))
+    print(kbd)
+    return InlineKeyboardMarkup(inline_keyboard=kbd)
 
 
 def changePayment(user, currentbank):
-    currentbank = 'aaio' if currentbank == 2 else 'anypay'
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Сменить на " + currentbank,
-                                               callback_data="switch_payment")]]) if user.admin else None
+    print(currentbank)
+    if currentbank == 4:
+        currentbank = 'bovapay'
+    elif currentbank == 3:
+        currentbank = 'nicepay'
+    elif currentbank == 2:
+        currentbank = 'aaio'
+    else:
+        currentbank = 'anypay'
+    banks = ['anypay', 'aaio', 'nicepay', 'bovapay']
+    banks.remove(currentbank)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Сменить на " + banks[0], callback_data=f"switch_payment_{banks[0]}")],
+        [InlineKeyboardButton(text="Сменить на " + banks[1], callback_data=f"switch_payment_{banks[1]}")],
+        [InlineKeyboardButton(text="Сменить на " + banks[2], callback_data=f"switch_payment_{banks[2]}")],
+    ]) if user.admin else None

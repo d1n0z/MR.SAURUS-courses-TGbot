@@ -8,6 +8,8 @@ class Profile(StatesGroup):
 class Mailing(StatesGroup):
     message = State()
     confirm = State()
+    button_text = State()
+    button_url = State()
 
 
 class BalanceTopUp(StatesGroup):

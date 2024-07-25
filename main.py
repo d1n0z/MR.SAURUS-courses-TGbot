@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 import traceback
 from datetime import datetime, timedelta
 
@@ -17,6 +18,7 @@ from sympy import *
 import config
 import data.db as db
 import locales as locale
+import server
 import utils.Cache as Cache
 import utils.CaptchaGenerator as CaptchaGenerator
 import utils.Checks as Checks
@@ -29,9 +31,11 @@ import utils.MessageHelper as MessageHelper
 import utils.States as States
 from botutils import recursiveParentIDS
 from utils.Scheduler import Scheduler
-from utils.payment.PaymentSystemAPI import PaymentSystem
 from utils.payment.AaioAPI import Aaio
 from utils.payment.AnypayAPI import Anypay
+from utils.payment.BovapayAPI import Bovapay
+from utils.payment.NicepayAPI import Nicepay
+from utils.payment.PaymentSystemAPI import PaymentSystem
 
 
 def setupPayment() -> PaymentSystem | None:
@@ -39,25 +43,30 @@ def setupPayment() -> PaymentSystem | None:
 
     print("  ... Инициализация платежной системы #" + str(paymentID))
 
+    #     banks = ['anypay', 'aaio', 'nicepay', 'bovapay']
+
     # if paymentID == 0:  # paylama
     #     return PayLama(config.PAYLAMA.API_KEY)
     # elif paymentID == 1:  # payok
     #     return Payok(config.PAYOK.API_ID, config.PAYOK.API_KEY, config.PAYOK.SITE_ID, config.PAYOK.SECRET_KEY)
-    if paymentID == 2:  # anypay
-        return Anypay(config.ANYPAY.SECRET_KEY, config.ANYPAY.API_ID, config.ANYPAY.API_KEY, config.ANYPAY.MERCHANT_ID)
     # elif paymentID == 4:  # aaio
-    else:
-        return Aaio(config.AAIO.SECRET_KEY, config.AAIO.API_KEY, config.AAIO.MERCHANT_ID)
     # elif paymentID == 3:  # drop
     #     return Drop()
     # else:
     #     print("  ... Не удалось инициализировать платежную систему!")
     #     return None
+    if paymentID == 4:  # bovapay
+        return Bovapay(config.BOVAPAY.API_KEY, config.BOVAPAY.USER_ID)
+    if paymentID == 3:  # nicepay
+        return Nicepay(config.NICEPAY.SECRET_KEY, config.NICEPAY.MERCHANT_ID)
+    if paymentID == 2:  # aaio
+        return Aaio(config.AAIO.SECRET_KEY, config.AAIO.API_KEY, config.AAIO.MERCHANT_ID)
+    else:  # anypay
+        return Anypay(config.ANYPAY.SECRET_KEY, config.ANYPAY.API_ID, config.ANYPAY.API_KEY, config.ANYPAY.MERCHANT_ID)
 
 
 global paymentapi
-# noinspection PyRedeclaration
-paymentapi = setupPayment()
+paymentapi = setupPayment()  # NOQA
 anypay = Anypay(config.ANYPAY.SECRET_KEY, config.ANYPAY.API_ID, config.ANYPAY.API_KEY, config.ANYPAY.MERCHANT_ID)
 aaio = Aaio(config.AAIO.SECRET_KEY, config.AAIO.API_KEY, config.AAIO.MERCHANT_ID)
 
@@ -90,11 +99,18 @@ async def start(message: Message, command: CommandObject, state: FSMContext):
             id=userId,
             username="Неизвестный" if message.from_user.username is None else message.from_user.username,
             captcha=CaptchaGenerator.generateCaptcha(), from_referral=referral)
+        if referral > 0:
+            try:
+                ref = db.User.get(db.User.id == referral)
+                ref.referrals += 1
+                ref.balance += 10
+                ref.save()
+            except:
+                traceback.print_exc()
         # CaptchaGenerator.saveCaptcha(user.captcha, user.id)
 
-    if Cache.cachedMode("test"):
-        await Logs.logStart(bot, user, None if user.from_referral == 0 else db.User.select().where(
-            db.User.id == user.from_referral).get())
+    await Logs.logStart(bot, user, None if user.from_referral == 0 else
+    db.User.select().where(db.User.id == user.from_referral).get())
 
     if user.banned:
         await message.answer(locale.get_message("banned_user"), parse_mode="HTML")
@@ -109,11 +125,11 @@ async def start(message: Message, command: CommandObject, state: FSMContext):
                              reply_markup=(await KeyBoards.subscribe(bot)))
         return
 
-    if user.captcha is not None:
-        await message.answer_photo(caption=locale.get_message("captcha"), parse_mode="HTML",
-                                   photo=Cache.cachedInputFile(path=f"data/captcha/{user.captcha.lower()}.jpg",
-                                                               filename="𤩒𤨗𤩀𤨻𤩌𤩨𤨠𤨣𤩌𤩨𤨠𤨤𤩌𤩞𤩌𤩨.jpg"))
-        return
+    # if user.captcha is not None:
+    #     await message.answer_photo(caption=locale.get_message("captcha"), parse_mode="HTML",
+    #                                photo=Cache.cachedInputFile(path=f"data/captcha/{user.captcha.lower()}.jpg",
+    #                                                            filename="𤩒𤨗𤩀𤨻𤩌𤩨𤨠𤨣𤩌𤩨𤨠𤨤𤩌𤩞𤩌𤩨.jpg"))
+    #     return
 
     if (await state.get_state()) != None:
         await state.set_state()
@@ -228,18 +244,21 @@ async def callback(callback: CallbackQuery, state: FSMContext):
         return
 
     if not (await Checks.subscribed(bot, id)):
+        await message.answer(locale.get_message("subscribe"), parse_mode="HTML",
+                             reply_markup=(await KeyBoards.subscribe(bot)))
         return
 
     if callback.data == "ok":
         await callback.answer("Больше эта кнопка ничего не делает.")
         return
 
-    if callback.data == 'switch_payment':
-        curr = db.getSettings().bank
-        bank = 1 if curr == 2 else 2
+    if callback.data.startswith('switch_payment_'):
+        bank = callback.data.split('_')[-1]
+        banks = ['anypay', 'aaio', 'nicepay', 'bovapay']
+        bank = banks.index(bank) + 1
         db.Settings.update(bank=bank).execute()
-        bank = 'aaio' if curr == 2 else 'anypay'
-        await callback.message.edit_caption(caption='✅ ' + bank + ' был установлен как основная платежка')
+        await callback.message.edit_caption(caption='✅ ' + banks[bank - 1] + ' был установлен как основная платежка',
+                                            reply_markup=KeyBoards.changePayment(user, db.getSettings().bank))
         paymentapi = setupPayment()
         return
 
@@ -249,9 +268,9 @@ async def callback(callback: CallbackQuery, state: FSMContext):
         try:
             info = paymentapi.payments[uid]
         except:
-            await callback.message.edit_caption(caption=str(callback.message.caption) +
-                                                        f"\nВремя подтверждения вышло.\nРешение принято в: "
-                                                        f"{datetime.now().strftime('%d.%m.%Y %H:%M')}")
+            await callback.message.edit_caption(
+                caption=f"{callback.message.caption}\nВремя подтверждения вышло.\n"
+                        f"Решение принято в: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
             await callback.answer("Время на ответ уже вышло.")
             return
 
@@ -330,7 +349,6 @@ async def callback(callback: CallbackQuery, state: FSMContext):
         return
 
     curr_state = await state.get_state()
-
     if curr_state is None:
         try:
             state_data = (await state.get_data())
@@ -356,7 +374,7 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                 id=id, name=state_data["category_name"],
                 media=None if not category_media else f"data/media/category/{id}.png",
                 description=state_data["category_description"], parent=parent_category,)
-                # discount=state_data["category_discount"],
+            # discount=state_data["category_discount"],
 
             if category_media is not None:
                 os.rename(category_media, category.media)
@@ -370,7 +388,7 @@ async def callback(callback: CallbackQuery, state: FSMContext):
 
                 await edit_message.answer_photo(
                     photo=Cache.cachedInputFile("data/media/global/courses.png" if course_category.media is None else
-                                                course_category.media,"loose again.mp4"),
+                                                course_category.media, "loose again.mp4"),
                     caption=None if not course_category.description else
                     course_category.description, parse_mode="HTML",
                     reply_markup=KeyBoards.coursesInline(course_category.parent, course_category.id, user))
@@ -378,12 +396,11 @@ async def callback(callback: CallbackQuery, state: FSMContext):
             await edit_message.edit_text(
                 f"Новая категория создана! Вот её подробности:\n\nНазвание: {category.name}\nОписание: "
                 f"{'нету' if not category.description else category.description}\nКатегория: "
-                f"{'Глобальная' if parent_category is None else parent_category.name}"
-                # f"\nСкидка: {category.discount}%"
-                , parse_mode="HTML",
+                f"{'Глобальная' if parent_category is None else parent_category.name}",
+                # f"\nСкидка: {category.discount}%",
+                parse_mode="HTML",
                 reply_markup=KeyBoards.cancelInlinePaidCoursesCategoryCreateEnd(category, "paid_courses"))
             return
-
     if curr_state is not None:
         if callback.data == "cancel":
             if Checks.media(callback.message):
@@ -452,7 +469,7 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                     await state.set_state()
                     await edit_message.edit_text(
                         "Завершить создание категории?",
-                        reply_markup=KeyBoards.customInline("Завершить","paid_courses_category_create_end"))
+                        reply_markup=KeyBoards.customInline("Завершить", "paid_courses_category_create_end"))
                     return
 
         if (curr_state == States.DropCreate.sber or curr_state == States.DropCreate.tinkoff or
@@ -550,17 +567,15 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                                     bank=bank)
 
             if "card" in payment:
-                await edit_message.edit_caption(caption=
-                                                locale.get_message("oplata_created_card", bank_display=bank_display,
-                                                                   card=payment['card'],
-                                                                   amount=payment['amount'], id=payment['id']),
-                                                parse_mode="HTML", reply_markup=KeyBoards.translationInline())
+                await edit_message.edit_caption(
+                    caption=locale.get_message("oplata_created_card", bank_display=bank_display, card=payment['card'],
+                                               amount=payment['amount'], id=payment['id']),
+                    parse_mode="HTML", reply_markup=KeyBoards.translationInline())
             else:
-                await edit_message.edit_caption(caption=
-                                                locale.get_message("oplata_created_form", bank_display=bank_display,
-                                                                   url=payment['url'],
-                                                                   amount=payment['amount'], id=payment['id']),
-                                                parse_mode="HTML", reply_markup=KeyBoards.translationInline())
+                await edit_message.edit_caption(
+                    caption=locale.get_message("oplata_created_form", bank_display=bank_display, url=payment['url'],
+                                               amount=payment['amount'], id=payment['id']),
+                    parse_mode="HTML", reply_markup=KeyBoards.translationInline())
             return
 
         if curr_state == States.FreeCourseAction.action.state:
@@ -618,13 +633,25 @@ async def callback(callback: CallbackQuery, state: FSMContext):
             await state.clear()
             return
 
+        if curr_state == States.Mailing.confirm.state and callback.data == "mailing_add_button":
+            await state.update_data(edit_message=callback.message)
+            await state.set_state(States.Mailing.button_text)
+            await callback.message.edit_text("Введите текст для кнопки: ", parse_mode="HTML",
+                                             reply_markup=KeyBoards.cancelInline())
+            return
+
         if curr_state == States.Mailing.confirm.state and callback.data == "mailing_confirm":
             state_data = await state.get_data()
             message: Message = state_data["message"]
+            if 'mail_buttons' in state_data:
+                markup = KeyBoards.mailKeyboard(state_data['mail_buttons'])
+            else:
+                markup = None
             await state.clear()
             await callback.message.edit_text("Отправляю ваше сообщение пользователям по фильтру.")
 
-            mail_users = db.User.select().where((db.User.blocked_bot == False) & (db.User.admin == False))
+            # mail_users = db.User.select().where((db.User.blocked_bot == False) & (db.User.admin == False))
+            mail_users = db.User.select().where((db.User.blocked_bot == False))
             mail_filters = state_data["mail_filters"]
 
             if mail_filters == "customer":
@@ -639,7 +666,7 @@ async def callback(callback: CallbackQuery, state: FSMContext):
 
             for mail_user in mail_users:
                 try:
-                    await message.copy_to(chat_id=mail_user.id, parse_mode="HTML")
+                    print((await message.copy_to(chat_id=mail_user.id, reply_markup=markup, parse_mode="HTML")))
                     sent += 1
                 except TelegramForbiddenError as e:
                     if not e.message.__contains__("blocked by the user"):
@@ -647,6 +674,9 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                     bot_blocked += 1
                     mail_user.blocked_bot = True
                     mail_user.save()
+                except:
+                    pass
+                    # traceback.print_exc()
 
             await callback.message.edit_text("Отправка сообщения завершена! 🥳\n"
                                              f"\n Успешно отправлено: {sent}"
@@ -730,6 +760,16 @@ async def callback(callback: CallbackQuery, state: FSMContext):
             db.BalanceHistory.create(customer=user, amount=amount)
             user.balance += amount
             user.save()
+
+            try:
+                referral_user: db.User = db.User.select().where(db.User.id == user.from_referral).get()
+
+                if referral_user is not None:
+                    referral_user.balance += amount * 0.20
+                    referral_user.save()
+            except:
+                pass
+
             await callback.message.edit_caption(locale.get_message("accept_buy_cart", amount=amount), parse_mode="HTML",
                                                 reply_markup=KeyBoards.cartConfirmBuy())
             return
@@ -751,6 +791,15 @@ async def callback(callback: CallbackQuery, state: FSMContext):
             db.BalanceHistory.create(customer=user, amount=amount)
             user.balance += amount
             user.save()
+
+            try:
+                referral_user: db.User = db.User.select().where(db.User.id == user.from_referral).get()
+
+                if referral_user is not None:
+                    referral_user.balance += amount * 0.20
+                    referral_user.save()
+            except:
+                pass
 
             await callback.message.edit_caption(
                 caption=locale.get_message("course_buy_confirm", name=course.name, description=course.description,
@@ -931,19 +980,20 @@ async def callback(callback: CallbackQuery, state: FSMContext):
             referral_user.balance += price * 0.05
             referral_user.save()
 
+        user.purchases += 1
         user.save()
 
         await Logs.logBuy(bot, user, course, None if not "promocode" in data else data["promocode"], price, discount)
 
         await callback.message.edit_media(media=InputMediaPhoto(
             media=Cache.cachedInputFile("data/media/global/purchased.png", "barabara bererebere")))
-        await callback.message.edit_caption(
-            caption=locale.get_message("course_bought", name=course.name, description=course.description,
-                                       price=course.price,
-                                       urls=(await bot.create_chat_invite_link(course.channel,
-                                                                               member_limit=1)).invite_link),
-            parse_mode="HTML", reply_markup=KeyBoards.cancelInline(
-                "buy_course"))  # KeyBoards.backwardsToParentCourseCategory(data["course_category"].id))
+        await callback.message.answer(
+            parse_mode="HTML", reply_markup=KeyBoards.cancelInline("buy_course"),
+            text=locale.get_message(
+                "course_bought", name=course.name, description=course.description, price=course.price,
+                urls=(await bot.create_chat_invite_link(course.channel, member_limit=1)).invite_link
+            ))
+        # KeyBoards.backwardsToParentCourseCategory(data["course_category"].id))
         return
 
     if callback.data == "course_buy":
@@ -1072,10 +1122,9 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                 (db.BalanceHistory.customer == user) & (db.BalanceHistory.amount > 0)):
             purchases += f"\n{action.date.strftime('%Y-%m-%d %H:%M')} +{action.amount} рублей"
 
-        await callback.message.edit_caption(caption=
-                                            locale.get_message("pay_error_history") if purchases == locale.get_message(
-                                                "pay_history") else purchases,
-                                            parse_mode="HTML", reply_markup=KeyBoards.backToProfileInline())
+        await callback.message.edit_caption(
+            caption=locale.get_message("pay_error_history") if purchases == locale.get_message("pay_history")
+            else purchases, parse_mode="HTML", reply_markup=KeyBoards.backToProfileInline())
         return
 
     if callback.data == "buy_course":
@@ -1312,7 +1361,7 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                                                             reply_markup=KeyBoards.cancelInline("settings_media"))
         except:
             edit_message = await callback.message.answer("Отправьте новую медию:", parse_mode="HTML",
-                                                            reply_markup=KeyBoards.cancelInline("settings_media"))
+                                                         reply_markup=KeyBoards.cancelInline("settings_media"))
         await state.set_state(States.SettingsMedia.media)
         if callback.data.startswith("edit_category_set_photo_paid_"):
             await state.update_data(action='courses', edit_message=edit_message, cat=-1)
@@ -1526,14 +1575,14 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                 await callback.message.edit_text(
                     "Вы успешно удалили категорию.\nВыбери категорию для удаления:",
                     parse_mode="HTML",
-                    reply_markup=KeyBoards.paidCoursesSelectorInline("category","delete", parent, new)
+                    reply_markup=KeyBoards.paidCoursesSelectorInline("category", "delete", parent, new)
                 )
             except:
                 await state.update_data(
                     edit_message=await callback.message.answer(
                         "Вы успешно удалили категорию.\nВыбери категорию для удаления:",
                         parse_mode="HTML",
-                        reply_markup=KeyBoards.paidCoursesSelectorInline("category","delete", parent, new)
+                        reply_markup=KeyBoards.paidCoursesSelectorInline("category", "delete", parent, new)
                     )
                 )
             return
@@ -1573,8 +1622,8 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                 f"Название: {edit.name}\nОписание: {edit.description}\n"
                 f"Категория: {'Глобальная' if new is None else new.name}"
                 # f"\nСкидка: {category.discount}%"
-                "\nВыбери действие для изменения:"
-                , parse_mode="HTML",
+                "\nВыбери действие для изменения:",
+                parse_mode="HTML",
                 reply_markup=KeyBoards.editPaidCategorySelectActionsSelectorInline(edit))
 
             await state.update_data(course_category=edit, category=edit, category_edit=edit,
@@ -1640,17 +1689,15 @@ async def callback(callback: CallbackQuery, state: FSMContext):
         if callback.data == "paid_courses_course_create" or callback.data == "edit_courses_add_product_paid":
             await state.update_data(course_action="create")
             try:
-                await callback.message.edit_text("Выбери новую категорию для курса:",
-                                             reply_markup=KeyBoards.paidCoursesSelectorInline(
-                                                 "category",
-                                                 "create_course",
-                                                 select_only_empty_categories=True))
+                await callback.message.edit_text(
+                    "Выбери новую категорию для курса:",
+                    reply_markup=KeyBoards.paidCoursesSelectorInline("category","create_course",
+                                                                     select_only_empty_categories=True))
             except:
-                await callback.message.answer("Выбери новую категорию для курса:",
-                                             reply_markup=KeyBoards.paidCoursesSelectorInline(
-                                                 "category",
-                                                 "create_course",
-                                                 select_only_empty_categories=True))
+                await callback.message.answer(
+                    "Выбери новую категорию для курса:",
+                    reply_markup=KeyBoards.paidCoursesSelectorInline("category", "create_course",
+                                                                     select_only_empty_categories=True))
             return
 
         if (callback.data.startswith("paid_courses_category_select_category_") and
@@ -1728,7 +1775,7 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                                                                                                   "edit"))
             except:
                 await callback.message.answer("Выбери курс в категории для изменения:", parse_mode="HTML",
-                                                 reply_markup=KeyBoards.paidCoursesSelectorInline("course", "edit"))
+                                              reply_markup=KeyBoards.paidCoursesSelectorInline("course", "edit"))
 
             return
 
@@ -1826,8 +1873,8 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                     f"Название: {category.name}\nОписание: {category.description}\n"
                     f"Категория: {'Глобальная' if parent_category is None else parent_category.name}"
                     # f"\nСкидка: {category.discount}%"
-                    "\nВыбери действие для изменения:"
-                    , parse_mode="HTML",
+                    "\nВыбери действие для изменения:",
+                    parse_mode="HTML",
                     reply_markup=KeyBoards.editPaidCategorySelectActionsSelectorInline(category))
                 return
             return
@@ -1892,10 +1939,10 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                                                          "category", "edit_course",
                                                          select_only_empty_categories=True))
                 except:
-                    await callback.message.answer("Выбери новую категорию для курса:",
-                                                     reply_markup=KeyBoards.paidCoursesSelectorInline(
-                                                         "category", "edit_course",
-                                                         select_only_empty_categories=True))
+                    await callback.message.answer(
+                        "Выбери новую категорию для курса:",
+                        reply_markup=KeyBoards.paidCoursesSelectorInline("category", "edit_course",
+                                                                         select_only_empty_categories=True))
                 return
 
             if callback.data.startswith(
@@ -2105,6 +2152,27 @@ async def callback(callback: CallbackQuery, state: FSMContext):
                                 edit_message=edit_message)
         return
 
+    if callback.data == 'mailing_add_line':
+        if len(state_data['mail_buttons'][-1]) > 0:
+            state_data['mail_buttons'].append([])
+            await edit_message.delete()
+            edit_message = await callback.message.answer("Кнопки перенесены на следующую строку.\n"
+                                                         "Точно отправить это сообщение?", parse_mode="HTML",
+                                                         reply_markup=KeyBoards.confirmMail())
+            await state.update_data(edit_message=edit_message, mail_buttons=state_data['mail_buttons'],
+                                    message=state_data['message'], mail_filters=state_data['mail_filters'])
+            await state.set_state(States.Mailing.confirm)
+            return
+        else:
+            await edit_message.delete()
+            edit_message = await callback.message.answer("Вы должны добавить хотя бы одну кнопку в текущую строку!\n"
+                                                         "Точно отправить это сообщение?", parse_mode="HTML",
+                                                         reply_markup=KeyBoards.confirmMail())
+            await state.update_data(edit_message=edit_message, mail_buttons=state_data['mail_buttons'],
+                                    message=state_data['message'], mail_filters=state_data['mail_filters'])
+            await state.set_state(States.Mailing.confirm)
+            return
+
     if callback.data.startswith("mailing_"):
         await state.update_data(mail_filters=callback.data.split("mailing_")[1],
                                 edit_message=callback.message)
@@ -2215,36 +2283,38 @@ async def message(message: Message, state: FSMContext):
         await message.answer(locale.get_message("banned_user"), parse_mode="HTML")
         return
 
-    if user.captcha is not None:
-        if user.captcha.lower() != text.lower():
-            await message.answer(locale.get_message("captcha_wrong"), parse_mode="HTML")
-            return
-
-        user.captcha = None
-        # CaptchaGenerator.deleteCaptcha(user.id)
-
-        referral_user = None
-
-        if user.from_referral != 0:
-            referral_user = db.User.select().where(db.User.id == user.from_referral).get()
-
-            if referral_user != None:
-                referral_user.referrals += 1
-                referral_user.balance += 10
-                referral_user.save()
-
-        await Logs.logStart(bot, user, referral_user)
-
-        await message.answer(locale.get_message("captcha_accept"), parse_mode="HTML",
-                             reply_markup=KeyBoards.captchaSuccessInline())
-        user.save()
-        return
+    # if user.captcha is not None:
+    #     if user.captcha.lower() != text.lower():
+    #         await message.answer(locale.get_message("captcha_wrong"), parse_mode="HTML")
+    #         return
+    #
+    #     user.captcha = None
+    #     # CaptchaGenerator.deleteCaptcha(user.id)
+    #
+    #     referral_user = None
+    #
+    #     if user.from_referral != 0:
+    #         referral_user = db.User.select().where(db.User.id == user.from_referral).get()
+    #
+    #         if referral_user != None:
+    #             referral_user.referrals += 1
+    #             referral_user.balance += 10
+    #             referral_user.save()
+    #
+    #     await Logs.logStart(bot, user, referral_user)
+    #
+    #     await message.answer(locale.get_message("captcha_accept"), parse_mode="HTML",
+    #                          reply_markup=KeyBoards.captchaSuccessInline())
+    #     user.save()
+    #     return
 
     if user.username != "Неизвестный" if message.from_user.username is None else message.from_user.username:
         user.username = "Неизвестный" if message.from_user.username is None else message.from_user.username
         user.save()
 
     if not (await Checks.subscribed(bot, userId)):
+        await message.answer(locale.get_message("subscribe"), parse_mode="HTML",
+                             reply_markup=(await KeyBoards.subscribe(bot)))
         return
 
     curr_state: None | str = await state.get_state()
@@ -2311,7 +2381,7 @@ async def message(message: Message, state: FSMContext):
             Cache.cacheClear()
             await edit_message.edit_text(
                 "Выбираем медию для настройки:", parse_mode="HTML",
-                     reply_markup=None if state_data['cat'] == -1 else KeyBoards.settingsMediaSelectorInline())
+                reply_markup=None if state_data['cat'] == -1 else KeyBoards.settingsMediaSelectorInline())
             await state.clear()
             return
 
@@ -2553,13 +2623,13 @@ async def message(message: Message, state: FSMContext):
                     await edit_message.edit_caption(
                         caption=locale.get_message("promo_discount", discount=promocode.discount),
                         parse_mode="HTML", reply_markup=KeyBoards.cancelInline(
-                            f"paid_courses_select_course_{state_data['course'].id}"))
+                            f"course_select_{state_data['course'].id}"))
                 elif promocode.type == "channel":
                     await Logs.logPromoUsage(bot, user, promocode)
                     await edit_message.edit_caption(caption=locale.get_message("secretchannel_promo", invite_channel=(
                         await bot.create_chat_invite_link(promocode.channel, member_limit=1)).invite_link),
                                                     parse_mode="HTML", reply_markup=KeyBoards.cancelInline(
-                            f"paid_courses_select_course_{state_data['course'].id}"))
+                            f"course_select_{state_data['course'].id}"))
                 elif promocode.type == "balance":
                     user.balance += promocode.amount
                     await Logs.logPromoUsage(bot, user, promocode)
@@ -2567,14 +2637,38 @@ async def message(message: Message, state: FSMContext):
                     await edit_message.edit_caption(
                         caption=locale.get_message("activate_promo_bal", amount=promocode.amount),
                         parse_mode="HTML", reply_markup=KeyBoards.cancelInline(
-                            f"paid_courses_select_course_{state_data['course'].id}"))
+                            f"course_select_{state_data['course'].id}"))
 
                 return
+
+        if curr_state == States.Mailing.button_text:
+            await edit_message.delete()
+            edit_message = await message.reply("Введите URL для кнопки: ", parse_mode="HTML",
+                                               reply_markup=KeyBoards.cancelInline())
+            if 'mail_buttons' in state_data:
+                state_data['mail_buttons'][-1].append([message.text])
+                await state.update_data(mail_buttons=state_data['mail_buttons'],
+                                        edit_message=edit_message, mail_filters=state_data['mail_filters'])
+            else:
+                await state.update_data(mail_buttons=[[[message.text]]],
+                                        edit_message=edit_message, mail_filters=state_data['mail_filters'])
+            await state.set_state(States.Mailing.button_url)
+            return
+
+        if curr_state == States.Mailing.button_url:
+            await edit_message.delete()
+            edit_message = await message.reply("Точно отправить это сообщение?", parse_mode="HTML",
+                                               reply_markup=KeyBoards.confirmMail())
+            state_data['mail_buttons'][-1][-1].append(message.text)
+            await state.update_data(mail_buttons=state_data['mail_buttons'],
+                                    edit_message=edit_message, mail_filters=state_data['mail_filters'])
+            await state.set_state(States.Mailing.confirm)
+            return
 
         if curr_state == States.Mailing.message.state:
             await edit_message.delete()
             edit_message = await message.reply("Точно отправить это сообщение?", parse_mode="HTML",
-                                               reply_markup=KeyBoards.confirmMail())
+                                               reply_markup=KeyBoards.confirmMail(False))
             await state.update_data(edit_message=edit_message,
                                     message=message)
             await state.set_state(States.Mailing.confirm)
@@ -2600,8 +2694,8 @@ async def message(message: Message, state: FSMContext):
                 f"Название: {category.name}\nОписание: {category.description}\n"
                 f"Категория: {'Глобальная' if parent_category is None else parent_category.name}"
                 # f"\nСкидка: {category.discount}%"
-                "\nВыбери действие для изменения:"
-                , parse_mode="HTML",
+                "\nВыбери действие для изменения:",
+                parse_mode="HTML",
                 reply_markup=KeyBoards.editPaidCategorySelectActionsSelectorInline(category))
             return
 
@@ -2620,16 +2714,16 @@ async def message(message: Message, state: FSMContext):
                     f"Название: {category.name}\nОписание: {category.description}\n"
                     f"Категория: {'Глобальная' if parent_category is None else parent_category.name}"
                     # f"\nСкидка: {category.discount}%"
-                    "\nВыбери действие для изменения:"
-                    , parse_mode="HTML",
+                    "\nВыбери действие для изменения:",
+                    parse_mode="HTML",
                     reply_markup=KeyBoards.editPaidCategorySelectActionsSelectorInline(category))
             except:
                 await message.answer(
                     f"Название: {category.name}\nОписание: {category.description}\n"
                     f"Категория: {'Глобальная' if parent_category is None else parent_category.name}"
                     # f"\nСкидка: {category.discount}%"
-                    "\nВыбери действие для изменения:"
-                    , parse_mode="HTML",
+                    "\nВыбери действие для изменения:",
+                    parse_mode="HTML",
                     reply_markup=KeyBoards.editPaidCategorySelectActionsSelectorInline(category))
             return
 
@@ -2665,16 +2759,16 @@ async def message(message: Message, state: FSMContext):
                     f"Название: {category.name}\nОписание: {category.description}\n"
                     f"Категория: {'Глобальная' if parent_category is None else parent_category.name}"
                     # f"\nСкидка: {category.discount}%"
-                    "\nВыбери действие для изменения:"
-                    , parse_mode="HTML",
+                    "\nВыбери действие для изменения:",
+                    parse_mode="HTML",
                     reply_markup=KeyBoards.editPaidCategorySelectActionsSelectorInline(category))
             except:
                 await message.answer(
                     f"Название: {category.name}\nОписание: {category.description}\n"
                     f"Категория: {'Глобальная' if parent_category is None else parent_category.name}"
                     # f"\nСкидка: {category.discount}%"
-                    "\nВыбери действие для изменения:"
-                    , parse_mode="HTML",
+                    "\nВыбери действие для изменения:",
+                    parse_mode="HTML",
                     reply_markup=KeyBoards.editPaidCategorySelectActionsSelectorInline(category))
             return
 
@@ -2979,7 +3073,7 @@ async def message(message: Message, state: FSMContext):
 
                 await edit_message.answer_photo(
                     photo=Cache.cachedInputFile("data/media/global/courses.png" if course_category.media is None else
-                                                course_category.media,"loose again.mp4"),
+                                                course_category.media, "loose again.mp4"),
                     caption=None if not course_category.description else
                     course_category.description, parse_mode="HTML",
                     reply_markup=KeyBoards.coursesInline(course_category.parent, course_category.id, user))
@@ -3007,8 +3101,8 @@ async def message(message: Message, state: FSMContext):
             await edit_message.edit_text(
                 f"Название: {promocode.name}\nКод: <code>{promocode.code}</code>\nИспользований: "
                 f"{promocode.used}/{promocode.max_usages}\nВключен: {'да' if promocode.enabled else 'нет'}\n" + str(
-                    f"Канал: #<code>{promocode.channel}</code>" if promocode.type == "channel" else 
-                    f"Скидка: {promocode.discount}%" if promocode.type == "discount" else 
+                    f"Канал: #<code>{promocode.channel}</code>" if promocode.type == "channel" else
+                    f"Скидка: {promocode.discount}%" if promocode.type == "discount" else
                     f"Баланс: {promocode.amount}"
                 ),
                 parse_mode="HTML", reply_markup=KeyBoards.editPromoCodeSelectActionsSelectorInline(promocode))
@@ -3037,8 +3131,8 @@ async def message(message: Message, state: FSMContext):
             await edit_message.edit_text(
                 f"Название: {promocode.name}\nКод: <code>{promocode.code}</code>\nИспользований: "
                 f"{promocode.used}/{promocode.max_usages}\nВключен: {'да' if promocode.enabled else 'нет'}\n" + str(
-                    f"Канал: #<code>{promocode.channel}</code>" if promocode.type == "channel" else 
-                    f"Скидка: {promocode.discount}%" if promocode.type == "discount" else 
+                    f"Канал: #<code>{promocode.channel}</code>" if promocode.type == "channel" else
+                    f"Скидка: {promocode.discount}%" if promocode.type == "discount" else
                     f"Баланс: {promocode.amount}"
                 ),
                 parse_mode="HTML", reply_markup=KeyBoards.editPromoCodeSelectActionsSelectorInline(promocode))
@@ -3424,6 +3518,8 @@ async def message(message: Message, state: FSMContext):
                         db.BalanceHistory.amount > 0)):
             topup_for_day += payment.amount
 
+        today_users = users.where(db.User.registered.between(datetime.now() - timedelta(hours=24), datetime.now()))
+
         await message.answer(
             "Денюшек: 💰"
             f"\n Всего заработанно: {info.earned}"
@@ -3433,12 +3529,12 @@ async def message(message: Message, state: FSMContext):
             "\n"
             "\nПользователей: 🥸"
             f"\n Всего: {len(users)}"
-            f"\n Проходящих капчу: {len(users.where(db.User.captcha != None))}"
+            # f"\n Проходящих капчу: {len(users.where(db.User.captcha != None))}"
             f"\n Заблокированных: {len(users.where(db.User.banned == True))}"
             f"\n Заплативших: {len(users.where(db.User.purchases > 0 | db.User.balance > 0))}"
             f"\n Рефералов: {len(referrals)}"
             f"\n От рефералов: {from_referrals}"
-            f"\n За этот день: {len(users.where(db.User.registered.between(datetime.now() - timedelta(hours=24), datetime.now())))}"
+            f"\n За этот день: {len(today_users)}"
             f"\n Заблокировало бота: {len(users.where(db.User.blocked_bot == True))}",
             parse_mode="HTML", reply_markup=KeyBoards.backToAdminPanelInline())
         return
@@ -3459,7 +3555,7 @@ async def message(message: Message, state: FSMContext):
         return
 
     if text == "🎩 Обратно 🎩":
-        await message.answer("Закрываю админ-панель 🎩🎩🎩", parse_mode="HTML", 
+        await message.answer("Закрываю админ-панель 🎩🎩🎩", parse_mode="HTML",
                              reply_markup=KeyBoards.welcomeReply(True))
         return
 
@@ -3479,11 +3575,12 @@ if __name__ == "__main__":
     Cleaner.clearTemp()
 
     print("2 ... Пре-генерация капчи")
-    asyncio.run(CaptchaGenerator.pre_generate_and_save_captcha())
+    # asyncio.run(CaptchaGenerator.pre_generate_and_save_captcha())
 
     print("3 ... Запуск сервисов")
     Cache.start()
     locale.start()
+    threading.Thread(target=server.run, kwargs={'port': 443}).start()
 
     print("4 ... Запуск бота")
 

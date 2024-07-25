@@ -11,9 +11,11 @@ async def logStart(bot: Bot, user: db.User, referral: db.User | None):  # start
 
     for channel in db.LogChannel.select().where(db.LogChannel.type == "start"):
         try:
+            if not str(channel.channel).startswith('-100'):
+                channel.channel = int(f'-100{channel.channel}')
             await bot.send_message(
                 chat_id=channel.channel,
-                text=f"@ {user.username}({user.id}) запустил бота/прошел капчу"
+                text=f"@{user.username} ({user.id}) запустил бота/прошел капчу"
                      f"{'' if referral is None else f' - реферал @{referral.username} ({referral.id})'}",
                 parse_mode="HTML", reply_markup=KeyBoards.logsUserManage(user))
         except Exception as e:
@@ -25,11 +27,13 @@ async def logStart(bot: Bot, user: db.User, referral: db.User | None):  # start
 async def logBuy(bot: Bot, user: db.User, course: db.Course, promo: db.PromoCode | None, price: int,
                  discount: int):  # buy
     print(
-        f"{user.username} ({user.id}) купил курс {course.name} по цене {price} со скидкой "
+        f"@{user.username} ({user.id}) купил курс {course.name} по цене {price} со скидкой "
         f"{discount}%{'' if promo is None else f' - промо {promo.name} ({promo.discount}%)'}")
 
     for channel in db.LogChannel.select().where(db.LogChannel.type == "buy"):
         try:
+            if not str(channel.channel).startswith('-100'):
+                channel.channel = int(f'-100{channel.channel}')
             await bot.send_message(
                 chat_id=channel.channel,
                 text=f"@{user.username} ({user.id}) купил курс {course.name} по цене {price} со скидкой {discount}%" + (
@@ -42,24 +46,28 @@ async def logBuy(bot: Bot, user: db.User, course: db.Course, promo: db.PromoCode
 
 
 async def logBalanceTopUp(bot: Bot, user: db.User, amount: int):  # balancetopup
-    print(f"{user.username} ({user.id}) пополнил баланс на {amount} рублей")
+    print(f"@{user.username} ({user.id}) пополнил баланс на {amount} рублей")
 
     for channel in db.LogChannel.select().where(db.LogChannel.type == "balancetopup"):
         try:
+            if not str(channel.channel).startswith('-100'):
+                channel.channel = int(f'-100{channel.channel}')
             await bot.send_message(chat_id=channel.channel,
-                                   text=f"{user.username} ({user.id}) пополнил баланс на {amount} рублей",
+                                   text=f"@{user.username} ({user.id}) пополнил баланс на {amount} рублей",
                                    parse_mode="HTML", reply_markup=KeyBoards.logsUserManage(user))
         except Exception as e:
             print(f"Logs:logStart(user={user.id}, amount={amount})::{channel.channel} -> Error, {e}")
 
 
 async def logPromoUsage(bot: Bot, user: db.User, promocode: db.PromoCode):  # promocodeusage
-    print(f"{user.username}({user.id}) использовал промо {promocode.name}"
+    print(f"@{user.username} ({user.id}) использовал промо {promocode.name}"
           f"{'' if promocode.max_usages == -1 else f'{promocode.used}/{promocode.max_usages}'}")
 
     for channel in db.LogChannel.select().where(db.LogChannel.type == "promocodeusage"):
         try:
-            text = (f"{user.username}({user.id}) использовал промо {promocode.name}"
+            if not str(channel.channel).startswith('-100'):
+                channel.channel = int(f'-100{channel.channel}')
+            text = (f"@{user.username} ({user.id}) использовал промо {promocode.name}"
                     f"{'' if promocode.max_usages == -1 else f'{promocode.used}/{promocode.max_usages}'}")
             await bot.send_message(chat_id=channel.channel,
                                    text=text,
@@ -73,6 +81,8 @@ async def logBan(bot: Bot, user: db.User | None, admin: db.User, all: bool = Fal
         print(f"@{admin.username} ({admin.id}) забанил всех")
         for channel in db.LogChannel.select().where(db.LogChannel.type == "ban"):
             try:
+                if not str(channel.channel).startswith('-100'):
+                    channel.channel = int(f'-100{channel.channel}')
                 await bot.send_message(chat_id=channel.channel, text=f"@{admin.username} ({admin.id}) забанил всех",
                                        parse_mode="HTML",
                                        reply_markup=KeyBoards.logsUserManage(user, ban=False, balance=False))
@@ -82,12 +92,12 @@ async def logBan(bot: Bot, user: db.User | None, admin: db.User, all: bool = Fal
                     f"Error, {e}")
         return
 
-    print(f"@ {admin.username}({admin.id}) забанил @{user.username} ({user.id})"
+    print(f"@{admin.username} ({admin.id}) забанил @{user.username} ({user.id})"
           f"{'' if not using_logs else' (через логи)'}")
     for channel in db.LogChannel.select().where(db.LogChannel.type == "ban"):
         try:
             await bot.send_message(chat_id=channel.channel,
-                                   text=f"@ {admin.username}({admin.id}) забанил @{user.username}({user.id})"
+                                   text=f"@{admin.username} ({admin.id}) забанил @{user.username} ({user.id})"
                                         f"{'' if not using_logs else ' (через логи)'}\nДействия ниже будут применены "
                                         f"на пользователя: @{user.username} ({user.id})",
                                    parse_mode="HTML", reply_markup=KeyBoards.logsUserManage(user))
@@ -112,13 +122,15 @@ async def logUnban(bot: Bot, user: db.User | None, admin: db.User, all: bool = F
         return
 
     print(
-        f"@{admin.username}({admin.id}) разбанил @{user.username} ({user.id})"
+        f"@{admin.username} ({admin.id}) разбанил @{user.username} ({user.id})"
         f"{'' if not using_logs else ' (через логи)'}")
     for channel in db.LogChannel.select().where(db.LogChannel.type == "ban"):
         try:
+            if not str(channel.channel).startswith('-100'):
+                channel.channel = int(f'-100{channel.channel}')
             await bot.send_message(
                 chat_id=channel.channel,
-                text=f"@{admin.username}({admin.id}) разбанил @{user.username} ({user.id})"
+                text=f"@{admin.username} ({admin.id}) разбанил @{user.username} ({user.id})"
                      f"{'' if not using_logs else' (через логи)'}\nДействия ниже будут применены на пользователя: "
                      f"@{user.username} ({user.id})",
                 parse_mode="HTML", reply_markup=KeyBoards.logsUserManage(user))

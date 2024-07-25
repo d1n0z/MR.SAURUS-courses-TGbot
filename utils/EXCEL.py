@@ -1,3 +1,5 @@
+import traceback
+
 from pandas import DataFrame
 import data.db as db
 
@@ -22,7 +24,7 @@ def export_users(name: str) -> str:
         banneds.append("yes" if user.banned else "no")
         blockeds.append("yes" if user.blocked_bot else "no")
         captchas.append(user.captcha if user.captcha else "")
-        from_referrals.append(user.from_referral if user.from_referral else "",)
+        from_referrals.append(user.from_referral if user.from_referral else "", )
         referralss.append(user.referrals)
         purchases.append(user.purchases)
         balances.append(user.balance)
@@ -67,7 +69,10 @@ def export_purchases_history(name: str) -> str:
 
     for purchase in db.Purchase.select():
         ids.append(purchase.id)
-        courses.append(purchase.courseName)
+        try:
+            courses.append(purchase.course)
+        except:
+            courses.append(0)
         users.append(purchase.customer.id)
         usernames.append(purchase.customer.username)
         prices.append(purchase.price)
@@ -101,8 +106,8 @@ def export_promocode(name: str) -> str:
         createds.append(promocode.created.strftime('%Y-%m-%d %H:%M:%S'))
         updateds.append(promocode.updated.strftime('%Y-%m-%d %H:%M:%S'))
 
-    df = DataFrame({'id': ids, 'course': courses, 'user': users, 'username': usernames, 'price': prices,  # NOQA
-                    'discount': discounts, 'date': dates})  # NOQA
+    df = DataFrame({'name': names, 'code': codes, 'discount': discounts, 'max_usages': max_usagess, 'used': useds,
+                    'enabled': enableds, 'created': createds})
     df.to_excel(f'data/export/{name}.xlsx', index=False)
 
     return f"data/export/{name}.xlsx"
