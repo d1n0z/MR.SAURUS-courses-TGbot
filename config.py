@@ -26,3 +26,13 @@ class AAIO:
     API_KEY = ""
     SECRET_KEY = ""
     SECRET_KEY2 = ""
+
+
+class NICEPAY:
+    MERCHANT_ID = ""
+    SECRET_KEY = ""
+
+
+class BOVAPAY:
+    USER_ID = ""
+    API_KEY = ""
